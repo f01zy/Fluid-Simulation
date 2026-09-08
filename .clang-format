@@ -1,0 +1,16 @@
+BasedOnStyle: LLVM
+ColumnLimit: 160
+
+IndentWidth: 2
+ContinuationIndentWidth: 2
+BracedInitializerIndentWidth: 2
+
+AlignConsecutiveMacros:
+  Enabled: true
+  AcrossEmptyLines: true
+  AcrossComments: true
+
+AllowShortIfStatementsOnASingleLine: Always
+AllowShortBlocksOnASingleLine: Always
+AllowShortFunctionsOnASingleLine: All
+BreakBeforeBinaryOperators: All
