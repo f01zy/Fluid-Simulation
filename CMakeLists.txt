@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.5)
-project(project C)
+project(fluid-simulation C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(OpenGL_GL_PREFERENCE GLVND)
-set(TARGET fluid)
+set(TARGET fluid-simulation)
 set(SOURCE ./src/main.c)
 
 add_executable(${TARGET} ${SOURCE})

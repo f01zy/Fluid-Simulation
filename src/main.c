@@ -2,6 +2,7 @@
  * HEADERS                                  *
  ********************************************/
 
+#include "cglm/vec3.h"
 #include <glad/gl.h>
 
 #include <GLFW/glfw3.h>
@@ -19,7 +20,8 @@
  ********************************************/
 
 #define FPS                 (60.0f)
-#define EPSILON             (1e-6f)
+#define CUSHION             (1.0e-4f)
+#define EPSILON             (1.0e-6f)
 #define WIDTH               (600)
 #define HEIGHT              (500)
 #define INVALID             ((uint32_t)-1)
@@ -54,7 +56,7 @@ typedef struct {
   Array fu, fv, fw;
   float dens;
   float dx;
-  vec3 lc;
+  vec3 lc, uc;
 } Grid;
 
 typedef struct {
@@ -80,12 +82,14 @@ void initialize_array(size_t nx, size_t ny, size_t nz, Array *dest) {
   dest->data = calloc(nx * ny * nz, sizeof(*dest->data));
 }
 
-void initialize_grid(size_t nx, size_t ny, size_t nz, float dx, vec3 lc, Grid *grid) {
+void initialize_grid(size_t nx, size_t ny, size_t nz, float dx, const vec3 lc, Grid *grid) {
   grid->nx = nx;
   grid->ny = ny;
   grid->nz = nz;
   grid->dx = dx;
-  glm_vec3_copy(lc, grid->lc);
+
+  glm_vec3_copy((float *)lc, grid->lc);
+  glm_vec3_add((float *)lc, (vec3){nx * dx, ny * dx, nz * dx}, grid->uc);
 
   struct {
     size_t nx, ny, nz;
@@ -112,29 +116,29 @@ void zero_out_velocity(const Array *x) {
 }
 
 void zero_out_velocities(const Grid *grid) {
-  const Array *arrs[] = {&grid->p, &grid->l, &grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
+  const Array *arrs[] = {&grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
   for (int i = 0; i < sizeof(arrs) / sizeof(*arrs); i++) {
     zero_out_velocity(arrs[i]);
   }
 }
 
-void get_indices(vec3 pos, float dx, ivec3 dest) {
+void get_indices(const vec3 pos, float dx, ivec3 dest) {
   for (int i = 0; i < 3; i++) {
     dest[i] = (uint32_t)floorf(pos[i] / dx);
   }
 }
 
-void get_weights(vec3 pos, float dx, ivec3 indices, vec3 dest) {
+void get_weights(const vec3 pos, float dx, ivec3 indices, vec3 dest) {
   vec3 tmp;
-  glm_vec3_divs(pos, dx, tmp);
+  glm_vec3_divs((float *)pos, dx, tmp);
   for (int i = 0; i < 3; i++) {
     dest[i] = tmp[i] - indices[i];
   }
 }
 
-void half_shift(vec3 pos, float dx, Axis cnst, vec3 dest) {
+void half_shift(const vec3 pos, float dx, Axis cnst, vec3 dest) {
   float half = dx / 2.0f;
-  glm_vec3_copy(pos, dest);
+  glm_vec3_copy((float *)pos, dest);
   for (int i = AXIS_X; i < AXIS_Z; i++) {
     if (cnst != i) dest[i] -= half;
   }
@@ -179,9 +183,9 @@ void clear_cell_labels(const Grid *grid) {
   set_inner_labels_to_empty(grid);
 }
 
-void set_particle_cell_to_fluid(const Array *l, vec3 shifted_pos, float dx) {
+void set_particle_cell_to_fluid(const Array *l, const vec3 shifted_pos, float dx) {
   ivec3 i;
-  get_indices(shifted_pos, dx, i);
+  get_indices((float *)shifted_pos, dx, i);
   l->data[IX(i[0], i[1], i[2], l->ny, l->nz)] = MATERIAL_FLUID;
 }
 
@@ -194,9 +198,9 @@ void contribute(float weight, float particle_vel, const Array *grid_vels, const 
   grid_wgts->data[IX(i, j, k, grid_vels->ny, grid_vels->nz)] += weight;
 }
 
-void splat(vec3 shifted_pos, float dx, float particle_vel, const Array *grid_vels, const Array *grid_wgts) {
+void splat(const vec3 shifted_pos, float dx, float particle_vel, const Array *grid_vels, const Array *grid_wgts) {
   vec3 shifted_pos_over_dx;
-  glm_vec3_scale(shifted_pos, dx, shifted_pos_over_dx);
+  glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
 
   ivec3 indices;
   vec3 weights;
@@ -223,7 +227,7 @@ void splat(vec3 shifted_pos, float dx, float particle_vel, const Array *grid_vel
   contribute(w0 * w1 * w2, particle_vel, grid_vels, grid_wgts, i + 1, j + 1, k + 1);
 }
 
-void normalize(const Array *x, const Array *fx, vec2 ix, vec2 iy, vec2 iz) {
+void normalize(const Array *x, const Array *fx, const vec2 ix, const vec2 iy, const vec2 iz) {
   for (int i = ix[0]; i < ix[1]; i++) {
     for (int j = iy[0]; j < iy[1]; j++) {
       for (int k = iz[0]; k < iz[0]; k++) {
@@ -295,6 +299,71 @@ void particles_to_grid(const Grid *grid, const Particle *particles, size_t n) {
   normalize(&grid->v, &grid->fv, (vec2){0, nx}, (vec2){2, ny - 1}, (vec2){0, nz});
   normalize(&grid->w, &grid->fw, (vec2){0, nx}, (vec2){0, ny}, (vec2){2, nz - 1});
   handle_boundaries(grid);
+}
+
+/********************************************
+ * ADVECTION                                 *
+ ********************************************/
+
+float interpolate_velocities(const vec3 shifted_pos, float dx, const Array *v) {
+  vec3 shifted_pos_over_dx;
+  glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
+
+  ivec3 indices;
+  vec3 weights;
+  get_indices(shifted_pos_over_dx, dx, indices);
+  get_weights(shifted_pos_over_dx, dx, indices, weights);
+
+  float w0 = weights[0];
+  float iw0 = 1 - w0;
+  float w1 = weights[1];
+  float iw1 = 1 - w1;
+  float w2 = weights[2];
+  float iw2 = 1 - w2;
+  size_t i = indices[0];
+  size_t j = indices[1];
+  size_t k = indices[2];
+  size_t ny = v->ny, nz = v->nz;
+  float *s = v->data;
+
+  // clang-format off
+  return iw0 * iw1 * iw2 * s[IX(i, j, k, ny, nz)]         +
+	 iw0 * iw1 *  w2 * s[IX(i, j, k + 1, ny, nz)]     +
+	 iw0 *  w1 * iw2 * s[IX(i, j + 1, k, ny, nz)]     +
+	 iw0 *  w1 *  w2 * s[IX(i, j + 1, k + 1, ny, nz)] +
+	 w0  * iw1 * iw2 * s[IX(i + 1, j, k, ny, nz)]     +
+	 w0  * iw1 * w2  * s[IX(i + 1, j, k + 1, ny, nz)] +
+	 w0  * w1  * iw2 * s[IX(i + 1, j + 1, k, ny, nz)] +
+	 w0  * w1  * w2  * s[IX(i + 1, j + 1, k + 1, ny, nz)];
+  // clang-format on
+}
+
+void clamp_to_non_solid_cells(const vec3 pos, const vec3 lc, const vec3 uc, float dx, vec3 dest) {
+  vec3 clamped_pos;
+  glm_vec3_copy((float *)pos, clamped_pos);
+  float border = dx + CUSHION;
+  for (int i = 0; i < 3; i++) {
+    float min = lc[i] + border;
+    if (clamped_pos[i] < min) {
+      clamped_pos[i] = min;
+      continue;
+    }
+    float max = uc[i] - border;
+    if (clamped_pos[i] > max) clamped_pos[i] = max;
+  }
+  glm_vec3_copy(clamped_pos, dest);
+}
+
+void advect(const Grid *grid, const vec3 pos, float dt, vec3 dest) {
+  vec3 shifted_pos;
+  glm_vec3_sub((float *)pos, (float *)grid->lc, shifted_pos);
+  float up = interpolate_velocities(shifted_pos, grid->dx, &grid->u);
+  float vp = interpolate_velocities(shifted_pos, grid->dx, &grid->v);
+  float wp = interpolate_velocities(shifted_pos, grid->dx, &grid->w);
+  vec3 new_pos;
+  glm_vec3_scale((vec3){up, vp, wp}, dt, new_pos);
+  glm_vec3_add(new_pos, (float *)pos, new_pos);
+  clamp_to_non_solid_cells(new_pos, grid->lc, grid->uc, grid->dx, dest);
 }
 
 /********************************************
