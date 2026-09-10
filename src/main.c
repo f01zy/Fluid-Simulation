@@ -1,10 +1,8 @@
-/********************************************
- * HEADERS                                  *
- ********************************************/
+// --------------------- HEADERS ---------------------
 
+// clang-format off
 #include "cglm/vec3.h"
 #include <glad/gl.h>
-
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
 #include <math.h>
@@ -14,46 +12,54 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+// clang-format on
 
-/********************************************
- * DEFINES                                  *
- ********************************************/
+// --------------------- DEFINES ---------------------
 
+#define G                   (9.80665f)
 #define FPS                 (60.0f)
 #define CUSHION             (1.0e-4f)
 #define EPSILON             (1.0e-6f)
+#define PRESSURE_ITERS      (1000)
 #define WIDTH               (600)
 #define HEIGHT              (500)
 #define INVALID             ((uint32_t)-1)
 #define TITLE               ("Fluid Simulation")
 #define IX(i, j, k, ny, nz) ((i) * (ny) * (nz) + (j) * (nz) + (k))
 
-/********************************************
- * TYPES                                    *
- ********************************************/
+// --------------------- TYPES ---------------------
 
-typedef enum {
-  MATERIAL_SOLID,
-  MATERIAL_EMPTY,
-  MATERIAL_FLUID,
-} MaterialType;
+typedef enum { MATERIAL_SOLID, MATERIAL_EMPTY, MATERIAL_FLUID } MaterialType;
 
+// clang-format off
 typedef enum {
-  AXIS_X,
-  AXIS_Y,
-  AXIS_Z,
-} Axis;
+  LEFT    = 1 << 3,
+  DOWN    = 1 << 4,
+  BACK    = 1 << 5,
+  RIGHT   = 1 << 6,
+  UP      = 1 << 7,
+  FORWARD = 1 << 8,
+} Direction;
+// clang-format on
+
+typedef enum { AXIS_X, AXIS_Y, AXIS_Z } Axis;
 
 typedef struct {
   size_t nx, ny, nz;
   float *data;
-} Array;
+} fArray;
 
 typedef struct {
   size_t nx, ny, nz;
-  Array p, l;
-  Array u, v, w;
-  Array fu, fv, fw;
+  uint16_t *data;
+} usArray;
+
+typedef struct {
+  size_t nx, ny, nz;
+  usArray n;
+  fArray p, l, r, d, q;
+  fArray u, v, w;
+  fArray fu, fv, fw;
   float dens;
   float dx;
   vec3 lc, uc;
@@ -63,9 +69,7 @@ typedef struct {
   vec3 pos, vel;
 } Particle;
 
-/********************************************
- * UTILITY                                  *
- ********************************************/
+// --------------------- UTILITY ---------------------
 
 bool utility_read_file(const char *path, char *buf, size_t size) {
   FILE *file = fopen(path, "r");
@@ -75,7 +79,7 @@ bool utility_read_file(const char *path, char *buf, size_t size) {
   return true;
 }
 
-void initialize_array(size_t nx, size_t ny, size_t nz, Array *dest) {
+void initialize_array(size_t nx, size_t ny, size_t nz, fArray *dest) {
   dest->nx = nx;
   dest->ny = ny;
   dest->nz = nz;
@@ -93,10 +97,11 @@ void initialize_grid(size_t nx, size_t ny, size_t nz, float dx, const vec3 lc, G
 
   struct {
     size_t nx, ny, nz;
-    Array *arr;
+    fArray *arr;
   } arrs[] = {
-    {nx, ny, nz, &grid->p},     {nx, ny, nz, &grid->l},      {nx + 1, ny, nz, &grid->u},  {nx, ny + 1, nz, &grid->v},
-    {nx, ny, nz + 1, &grid->w}, {nx + 1, ny, nz, &grid->fu}, {nx, ny + 1, nz, &grid->fv}, {nx, ny, nz + 1, &grid->fw},
+    {nx, ny, nz, &grid->p},      {nx, ny, nz, &grid->l},      {nx, ny, nz, &grid->r},      {nx, ny, nz, &grid->d},
+    {nx, ny, nz, &grid->q},      {nx + 1, ny, nz, &grid->u},  {nx, ny + 1, nz, &grid->v},  {nx, ny, nz + 1, &grid->w},
+    {nx + 1, ny, nz, &grid->fu}, {nx, ny + 1, nz, &grid->fv}, {nx, ny, nz + 1, &grid->fw},
   };
   for (int i = 0; i < sizeof(arrs) / sizeof(*arrs); i++) {
     initialize_array(arrs[i].nx, arrs[i].ny, arrs[i].nx, arrs[i].arr);
@@ -104,21 +109,45 @@ void initialize_grid(size_t nx, size_t ny, size_t nz, float dx, const vec3 lc, G
 }
 
 void free_grid(Grid *grid) {
-  Array *arrs[] = {&grid->p, &grid->l, &grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
+  fArray *arrs[] = {&grid->p, &grid->l, &grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
   for (int i = 0; i < sizeof(arrs) / sizeof(*arrs); i++) {
     free(arrs[i]->data);
   }
 }
 
-void zero_out_velocity(const Array *x) {
+void zero_out_farray(const fArray *x) {
+  size_t size = x->nx * x->ny * x->nz;
+  memset(x->data, 0, size);
+}
+
+void zero_out_usarray(const usArray *x) {
   size_t size = x->nx * x->ny * x->nz;
   memset(x->data, 0, size);
 }
 
 void zero_out_velocities(const Grid *grid) {
-  const Array *arrs[] = {&grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
+  const fArray *arrs[] = {&grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
   for (int i = 0; i < sizeof(arrs) / sizeof(*arrs); i++) {
-    zero_out_velocity(arrs[i]);
+    zero_out_farray(arrs[i]);
+  }
+}
+
+void farray_copy(const fArray *source, fArray *dest) {
+  size_t len = source->nx * source->ny * source->nz;
+  memcpy(dest->data, source->data, len);
+}
+
+void farray_plus_equal(fArray *source, const fArray *arr, float scalar) {
+  size_t len = source->nx * source->ny * source->nz;
+  for (int i = 0; i < len; i++) {
+    source->data[i] += arr->data[i] * scalar;
+  }
+}
+
+void farray_plus_times(fArray *source, const fArray *arr, float scalar) {
+  size_t len = source->nx * source->ny * source->nz;
+  for (int i = 0; i < len; i++) {
+    source->data[i] = arr->data[i] + source->data[i] * scalar;
   }
 }
 
@@ -144,9 +173,20 @@ void half_shift(const vec3 pos, float dx, Axis cnst, vec3 dest) {
   }
 }
 
-/********************************************
- * LABELS                                   *
- ********************************************/
+float dot(const fArray *a, const fArray *b) {
+  float ans = 0.0f;
+  for (int i = 0; i < a->nx; i++) {
+    for (int j = 0; j < a->ny; j++) {
+      for (int k = 0; k < a->nz; k++) {
+        size_t t = IX(i, j, k, a->ny, a->nz);
+        ans += a->data[i] * b->data[i];
+      }
+    }
+  }
+  return ans;
+}
+
+// --------------------- LABELS ---------------------
 
 void set_outer_labels_to_solid(const Grid *grid) {
   float *l = grid->l.data;
@@ -183,22 +223,65 @@ void clear_cell_labels(const Grid *grid) {
   set_inner_labels_to_empty(grid);
 }
 
-void set_particle_cell_to_fluid(const Array *l, const vec3 shifted_pos, float dx) {
+void set_particle_cell_to_fluid(const fArray *l, const vec3 shifted_pos, float dx) {
   ivec3 i;
   get_indices((float *)shifted_pos, dx, i);
   l->data[IX(i[0], i[1], i[2], l->ny, l->nz)] = MATERIAL_FLUID;
 }
 
-/********************************************
- * SPLATTING                                *
- ********************************************/
+// --------------------- NEIGHBOURS ---------------------
 
-void contribute(float weight, float particle_vel, const Array *grid_vels, const Array *grid_wgts, size_t i, size_t j, size_t k) {
+MaterialType get_neighbour_material(const fArray *labels, size_t i, size_t j, size_t k, Direction dir) {
+  size_t ny = labels->ny, nz = labels->nz;
+  switch (dir) {
+  case LEFT:
+    return labels->data[IX(i - 1, j, k, ny, nz)];
+  case RIGHT:
+    return labels->data[IX(i + 1, j, k, ny, nz)];
+  case DOWN:
+    return labels->data[IX(i, j - 1, k, ny, nz)];
+  case UP:
+    return labels->data[IX(i, j + 1, k, ny, nz)];
+  case BACK:
+    return labels->data[IX(i, j, k - 1, ny, nz)];
+  case FORWARD:
+    return labels->data[IX(i, j, k + 1, ny, nz)];
+  }
+}
+
+uint16_t update_from_neighbour(uint16_t info, MaterialType material, Direction dir) {
+  uint16_t tmp;
+  if (material != MATERIAL_SOLID) tmp++;
+  if (material != MATERIAL_FLUID) return tmp;
+  return tmp | dir;
+}
+
+void make_neighbour_material_info(const fArray *labels, const usArray *neighbours) {
+  size_t nx = labels->nx, ny = labels->ny, nz = labels->nz;
+  zero_out_usarray(neighbours);
+  for (int i = 1; i < nx - 1; i++) {
+    for (int j = 1; j < ny - 1; j++) {
+      for (int k = 1; k < nz - 1; k++) {
+        if (labels->data[IX(i, j, k, ny, nz)] != MATERIAL_FLUID) continue;
+        uint16_t info = 0;
+        for (Direction dir = LEFT; dir < FORWARD; dir++) {
+          MaterialType nbr = get_neighbour_material(labels, i, j, k, dir);
+          info = update_from_neighbour(info, nbr, dir);
+        }
+        neighbours->data[IX(i, j, k, ny, nz)] = info;
+      }
+    }
+  }
+}
+
+// --------------------- SPLATTING ---------------------
+
+void contribute(float weight, float particle_vel, const fArray *grid_vels, const fArray *grid_wgts, size_t i, size_t j, size_t k) {
   grid_vels->data[IX(i, j, k, grid_vels->ny, grid_vels->nz)] += weight * particle_vel;
   grid_wgts->data[IX(i, j, k, grid_vels->ny, grid_vels->nz)] += weight;
 }
 
-void splat(const vec3 shifted_pos, float dx, float particle_vel, const Array *grid_vels, const Array *grid_wgts) {
+void splat(const vec3 shifted_pos, float dx, float particle_vel, const fArray *grid_vels, const fArray *grid_wgts) {
   vec3 shifted_pos_over_dx;
   glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
 
@@ -227,7 +310,7 @@ void splat(const vec3 shifted_pos, float dx, float particle_vel, const Array *gr
   contribute(w0 * w1 * w2, particle_vel, grid_vels, grid_wgts, i + 1, j + 1, k + 1);
 }
 
-void normalize(const Array *x, const Array *fx, const vec2 ix, const vec2 iy, const vec2 iz) {
+void normalize(const fArray *x, const fArray *fx, const vec2 ix, const vec2 iy, const vec2 iz) {
   for (int i = ix[0]; i < ix[1]; i++) {
     for (int j = iy[0]; j < iy[1]; j++) {
       for (int k = iz[0]; k < iz[0]; k++) {
@@ -301,11 +384,9 @@ void particles_to_grid(const Grid *grid, const Particle *particles, size_t n) {
   handle_boundaries(grid);
 }
 
-/********************************************
- * ADVECTION                                 *
- ********************************************/
+// --------------------- ADVECTION ---------------------
 
-float interpolate_velocities(const vec3 shifted_pos, float dx, const Array *v) {
+float interpolate_velocities(const vec3 shifted_pos, float dx, const fArray *v) {
   vec3 shifted_pos_over_dx;
   glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
 
@@ -366,9 +447,111 @@ void advect(const Grid *grid, const vec3 pos, float dt, vec3 dest) {
   clamp_to_non_solid_cells(new_pos, grid->lc, grid->uc, grid->dx, dest);
 }
 
-/********************************************
- * SHADERS                                  *
- ********************************************/
+// --------------------- PHYSICS ---------------------
+
+void apply_gravity(const Grid *grid, float dt) {
+  const fArray *v = &grid->v;
+  for (int i = 0; i < v->nx; i++) {
+    for (int j = 0; j < v->ny + 1; j++) {
+      for (int k = 0; k < v->nz; k++) {
+        v->data[IX(i, j, k, v->ny, v->nz)] += G * dt;
+      }
+    }
+  }
+  handle_boundaries(grid);
+}
+
+// --------------------- PRESSURE ---------------------
+
+void make_residual_from_divergence(const Grid *grid) {
+  size_t nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  for (int i = 1; i < nx - 1; i++) {
+    for (int j = 1; j < ny - 1; j++) {
+      for (int k = 1; k < nz - 1; k++) {
+        size_t t = IX(i, j, k, ny, nz);
+        if (grid->l.data[t] != MATERIAL_FLUID) {
+          grid->r.data[t] = 0.0f;
+          continue;
+        }
+        float du_dx = grid->u.data[IX(i + 1, j, k, ny, nz)] - grid->u.data[IX(i, j, k, ny, nz)];
+        float dv_dy = grid->v.data[IX(i, j + 1, k, ny, nz)] - grid->v.data[IX(i, j, k, ny, nz)];
+        float dw_dz = grid->w.data[IX(i, j, k + 1, ny, nz)] - grid->w.data[IX(i, j, k, ny, nz)];
+        float divergence = du_dx + dv_dy + dw_dz;
+        grid->r.data[t] = -divergence;
+      }
+    }
+  }
+}
+
+void a_times_d(const fArray *d, const usArray *neighbours, fArray *q) {
+  size_t nx = d->nx, ny = d->ny, nz = d->nz;
+  const uint16_t center = 7;
+  for (int i = 1; i < nx - 1; i++) {
+    for (int j = 1; j < ny - 1; j++) {
+      for (int k = 1; k < nz - 1; k++) {
+        size_t t = IX(i, j, k, ny, nz);
+        uint16_t nbrs = neighbours->data[t];
+        if (!nbrs) {
+          q->data[t] = 0.0f;
+          continue;
+        }
+        // clang-format off
+        q->data[t] = ((nbrs & center)  * d->data[IX(i, j, k, ny, nz)])         -
+		     ((nbrs & LEFT)    ? d->data[IX(i - 1, j, k, ny, nz)] : 0) -
+		     ((nbrs & DOWN)    ? d->data[IX(i, j - 1, k, ny, nz)] : 0) -
+		     ((nbrs & BACK)    ? d->data[IX(i, j, k - 1, ny, nz)] : 0) -
+		     ((nbrs & RIGHT)   ? d->data[IX(i + 1, j, k, ny, nz)] : 0) -
+		     ((nbrs & UP)      ? d->data[IX(i, j + 1, k, ny, nz)] : 0) -
+		     ((nbrs & FORWARD) ? d->data[IX(i, j, k + 1, ny, nz)] : 0);
+        // clang-format on
+      }
+    }
+  }
+}
+
+void _project_pressure(Grid *grid) {
+  zero_out_farray(&grid->p);
+  make_residual_from_divergence(grid);
+  farray_copy(&grid->r, &grid->d);
+
+  float sigma = dot(&grid->r, &grid->r);
+  float tolerance = sigma * EPSILON;
+
+  for (int i = 0; i < PRESSURE_ITERS; i++) {
+    a_times_d(&grid->d, &grid->n, &grid->q);
+    float alpha = sigma / dot(&grid->d, &grid->q);
+    farray_plus_equal(&grid->p, &grid->d, alpha);
+    farray_plus_equal(&grid->r, &grid->q, -alpha);
+    float sigma_old = sigma;
+    sigma = dot(&grid->r, &grid->r);
+    float beta = sigma / sigma_old;
+    farray_plus_times(&grid->d, &grid->r, beta);
+  }
+}
+
+void substract_pressure_gradient(const Grid *grid) {
+  size_t nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  for (int i = 1; i < nx - 1; i++) {
+    for (int j = 1; j < ny - 1; j++) {
+      for (int k = 1; k < nz - 1; k++) {
+        size_t t = IX(i, j, k, ny, nz);
+        if (grid->l.data[i] == MATERIAL_SOLID) continue;
+        float curr_pressure = grid->p.data[t];
+        if (grid->l.data[IX(i - 1, j, k, ny, nz)] != MATERIAL_SOLID) grid->u.data[t] -= curr_pressure - grid->p.data[IX(i - 1, j, k, ny, nz)];
+        if (grid->l.data[IX(i, j - 1, k, ny, nz)] != MATERIAL_SOLID) grid->v.data[t] -= curr_pressure - grid->p.data[IX(i, j - 1, k, ny, nz)];
+        if (grid->l.data[IX(i, j, k - 1, ny, nz)] != MATERIAL_SOLID) grid->w.data[t] -= curr_pressure - grid->p.data[IX(i, j, k - 1, ny, nz)];
+      }
+    }
+  }
+}
+
+void project_pressure(Grid *grid) {
+  make_neighbour_material_info(&grid->l, &grid->n);
+  _project_pressure(grid);
+  substract_pressure_gradient(grid);
+}
+
+// --------------------- SHADERS ---------------------
 
 uint32_t create_shader(uint32_t shader_program, GLenum type, const char *path) {
   char buf[8192], info[512];
@@ -412,9 +595,7 @@ uint32_t create_shader_program(const char *vertex_shader_path, const char *fragm
   return shader_program;
 }
 
-/********************************************
- * MAIN LOOP                                *
- ********************************************/
+// --------------------- MAIN LOOP ---------------------
 
 int main() {
   if (!glfwInit()) {
