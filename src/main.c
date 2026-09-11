@@ -2,6 +2,7 @@
 
 // clang-format off
 #include "cglm/vec3.h"
+#include <errno.h>
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
@@ -12,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cJSON.h>
 // clang-format on
 
 // --------------------- DEFINES ---------------------
@@ -20,11 +22,11 @@
 #define FPS                 (60.0f)
 #define CUSHION             (1.0e-4f)
 #define EPSILON             (1.0e-6f)
-#define PRESSURE_ITERS      (1000)
 #define WIDTH               (600)
 #define HEIGHT              (500)
 #define INVALID             ((uint32_t)-1)
 #define TITLE               ("Fluid Simulation")
+#define PRESSURE_ITERS      (1000)
 #define IX(i, j, k, ny, nz) ((i) * (ny) * (nz) + (j) * (nz) + (k))
 
 // --------------------- TYPES ---------------------
@@ -60,18 +62,28 @@ typedef struct {
   fArray p, l, r, d, q;
   fArray u, v, w;
   fArray fu, fv, fw;
+  vec3 lc, uc;
+  float flip_ratio;
   float dens;
   float dx;
-  vec3 lc, uc;
 } Grid;
 
 typedef struct {
   vec3 pos, vel;
 } Particle;
 
+typedef struct {
+  float flip_ratio;
+  float density;
+  float dx;
+  vec3 res;
+  vec3 lc;
+  char particles[1024];
+} Settings;
+
 // --------------------- UTILITY ---------------------
 
-bool utility_read_file(const char *path, char *buf, size_t size) {
+bool read_file(const char *path, char *buf, size_t size) {
   FILE *file = fopen(path, "r");
   if (!file) return false;
   buf[fread(buf, sizeof(char), size - 1, file)] = '\0';
@@ -86,14 +98,23 @@ void initialize_array(size_t nx, size_t ny, size_t nz, fArray *dest) {
   dest->data = calloc(nx * ny * nz, sizeof(*dest->data));
 }
 
-void initialize_grid(size_t nx, size_t ny, size_t nz, float dx, const vec3 lc, Grid *grid) {
+void initialize_grid(const Settings *settings, Grid *grid) {
+  size_t nx = settings->res[0];
+  size_t ny = settings->res[1];
+  size_t nz = settings->res[2];
+  float flip_ratio = settings->flip_ratio;
+  float density = settings->density;
+  float dx = settings->dx;
+
   grid->nx = nx;
   grid->ny = ny;
   grid->nz = nz;
   grid->dx = dx;
+  grid->dens = density;
+  grid->flip_ratio = flip_ratio;
 
-  glm_vec3_copy((float *)lc, grid->lc);
-  glm_vec3_add((float *)lc, (vec3){nx * dx, ny * dx, nz * dx}, grid->uc);
+  glm_vec3_copy((float *)settings->lc, grid->lc);
+  glm_vec3_add((float *)settings->lc, (vec3){nx * dx, ny * dx, nz * dx}, grid->uc);
 
   struct {
     size_t nx, ny, nz;
@@ -116,12 +137,12 @@ void free_grid(Grid *grid) {
 }
 
 void zero_out_farray(const fArray *x) {
-  size_t size = x->nx * x->ny * x->nz;
+  size_t size = x->nx * x->ny * x->nz * sizeof(float);
   memset(x->data, 0, size);
 }
 
 void zero_out_usarray(const usArray *x) {
-  size_t size = x->nx * x->ny * x->nz;
+  size_t size = x->nx * x->ny * x->nz * sizeof(uint16_t);
   memset(x->data, 0, size);
 }
 
@@ -132,7 +153,7 @@ void zero_out_velocities(const Grid *grid) {
   }
 }
 
-void farray_copy(const fArray *source, fArray *dest) {
+void farray_copy(const fArray *source, const fArray *dest) {
   size_t len = source->nx * source->ny * source->nz;
   memcpy(dest->data, source->data, len);
 }
@@ -274,13 +295,65 @@ void make_neighbour_material_info(const fArray *labels, const usArray *neighbour
   }
 }
 
-// --------------------- SPLATTING ---------------------
+// --------------------- INTERPOLATION ---------------------
+
+float trilinear_interpolation(const vec3 shifted_pos, float dx, const fArray *v) {
+  vec3 shifted_pos_over_dx;
+  glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
+
+  ivec3 indices;
+  vec3 weights;
+  get_indices(shifted_pos_over_dx, dx, indices);
+  get_weights(shifted_pos_over_dx, dx, indices, weights);
+
+  float w0 = weights[0];
+  float iw0 = 1 - w0;
+  float w1 = weights[1];
+  float iw1 = 1 - w1;
+  float w2 = weights[2];
+  float iw2 = 1 - w2;
+  size_t i = indices[0];
+  size_t j = indices[1];
+  size_t k = indices[2];
+  size_t ny = v->ny, nz = v->nz;
+  float *s = v->data;
+
+  // clang-format off
+  return iw0 * iw1 * iw2 * s[IX(i, j, k, ny, nz)]         +
+	 iw0 * iw1 *  w2 * s[IX(i, j, k + 1, ny, nz)]     +
+	 iw0 *  w1 * iw2 * s[IX(i, j + 1, k, ny, nz)]     +
+	 iw0 *  w1 *  w2 * s[IX(i, j + 1, k + 1, ny, nz)] +
+	 w0  * iw1 * iw2 * s[IX(i + 1, j, k, ny, nz)]     +
+	 w0  * iw1 * w2  * s[IX(i + 1, j, k + 1, ny, nz)] +
+	 w0  * w1  * iw2 * s[IX(i + 1, j + 1, k, ny, nz)] +
+	 w0  * w1  * w2  * s[IX(i + 1, j + 1, k + 1, ny, nz)];
+  // clang-format on
+}
+
+void interpolate_velocities(const vec3 pos, const vec3 lc, float dx, const fArray *u, const fArray *v, const fArray *w, vec3 dest) {
+  vec3 shifted_pos;
+  glm_vec3_sub((float *)pos, (float *)lc, shifted_pos);
+  dest[0] = trilinear_interpolation(shifted_pos, dx, u);
+  dest[1] = trilinear_interpolation(shifted_pos, dx, v);
+  dest[2] = trilinear_interpolation(shifted_pos, dx, w);
+}
+
+void interpolate_curr_velocities(const Grid *grid, const vec3 pos, vec3 dest) {
+  interpolate_velocities(pos, grid->lc, grid->dx, &grid->u, &grid->v, &grid->w, dest);
+}
+
+void interpolate_old_velocities(const Grid *grid, const vec3 pos, vec3 dest) {
+  interpolate_velocities(pos, grid->lc, grid->dx, &grid->fu, &grid->fv, &grid->fw, dest);
+}
+
+// --------------------- SPLATTING (from particle to grid) ---------------------
 
 void contribute(float weight, float particle_vel, const fArray *grid_vels, const fArray *grid_wgts, size_t i, size_t j, size_t k) {
   grid_vels->data[IX(i, j, k, grid_vels->ny, grid_vels->nz)] += weight * particle_vel;
   grid_wgts->data[IX(i, j, k, grid_vels->ny, grid_vels->nz)] += weight;
 }
 
+// TODO: вылезает отрицательная позиция и индексы неправильно считаются
 void splat(const vec3 shifted_pos, float dx, float particle_vel, const fArray *grid_vels, const fArray *grid_wgts) {
   vec3 shifted_pos_over_dx;
   glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
@@ -381,43 +454,24 @@ void particles_to_grid(const Grid *grid, const Particle *particles, size_t n) {
   normalize(&grid->u, &grid->fu, (vec2){2, nx - 1}, (vec2){0, ny}, (vec2){0, nz});
   normalize(&grid->v, &grid->fv, (vec2){0, nx}, (vec2){2, ny - 1}, (vec2){0, nz});
   normalize(&grid->w, &grid->fw, (vec2){0, nx}, (vec2){0, ny}, (vec2){2, nz - 1});
+  farray_copy(&grid->u, &grid->fu);
+  farray_copy(&grid->v, &grid->fv);
+  farray_copy(&grid->w, &grid->fw);
   handle_boundaries(grid);
 }
 
-// --------------------- ADVECTION ---------------------
+// --------------------- GATHERING (from grid to particle) ---------------------
 
-float interpolate_velocities(const vec3 shifted_pos, float dx, const fArray *v) {
-  vec3 shifted_pos_over_dx;
-  glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
-
-  ivec3 indices;
-  vec3 weights;
-  get_indices(shifted_pos_over_dx, dx, indices);
-  get_weights(shifted_pos_over_dx, dx, indices, weights);
-
-  float w0 = weights[0];
-  float iw0 = 1 - w0;
-  float w1 = weights[1];
-  float iw1 = 1 - w1;
-  float w2 = weights[2];
-  float iw2 = 1 - w2;
-  size_t i = indices[0];
-  size_t j = indices[1];
-  size_t k = indices[2];
-  size_t ny = v->ny, nz = v->nz;
-  float *s = v->data;
-
-  // clang-format off
-  return iw0 * iw1 * iw2 * s[IX(i, j, k, ny, nz)]         +
-	 iw0 * iw1 *  w2 * s[IX(i, j, k + 1, ny, nz)]     +
-	 iw0 *  w1 * iw2 * s[IX(i, j + 1, k, ny, nz)]     +
-	 iw0 *  w1 *  w2 * s[IX(i, j + 1, k + 1, ny, nz)] +
-	 w0  * iw1 * iw2 * s[IX(i + 1, j, k, ny, nz)]     +
-	 w0  * iw1 * w2  * s[IX(i + 1, j, k + 1, ny, nz)] +
-	 w0  * w1  * iw2 * s[IX(i + 1, j + 1, k, ny, nz)] +
-	 w0  * w1  * w2  * s[IX(i + 1, j + 1, k + 1, ny, nz)];
-  // clang-format on
+void grid_to_particles(const Grid *grid, const Particle *particle, float flip_ratio, vec3 dest) {
+  vec3 old_vel, new_vel;
+  interpolate_old_velocities(grid, particle->pos, old_vel);
+  interpolate_curr_velocities(grid, particle->pos, new_vel);
+  glm_vec3_sub((float *)particle->vel, old_vel, dest);
+  glm_vec3_scale(dest, flip_ratio, dest);
+  glm_vec3_add(dest, new_vel, dest);
 }
+
+// --------------------- ADVECTION ---------------------
 
 void clamp_to_non_solid_cells(const vec3 pos, const vec3 lc, const vec3 uc, float dx, vec3 dest) {
   vec3 clamped_pos;
@@ -436,13 +490,10 @@ void clamp_to_non_solid_cells(const vec3 pos, const vec3 lc, const vec3 uc, floa
 }
 
 void advect(const Grid *grid, const vec3 pos, float dt, vec3 dest) {
-  vec3 shifted_pos;
-  glm_vec3_sub((float *)pos, (float *)grid->lc, shifted_pos);
-  float up = interpolate_velocities(shifted_pos, grid->dx, &grid->u);
-  float vp = interpolate_velocities(shifted_pos, grid->dx, &grid->v);
-  float wp = interpolate_velocities(shifted_pos, grid->dx, &grid->w);
+  vec3 interpolation;
+  interpolate_velocities(pos, grid->lc, grid->dx, &grid->u, &grid->v, &grid->w, interpolation);
   vec3 new_pos;
-  glm_vec3_scale((vec3){up, vp, wp}, dt, new_pos);
+  glm_vec3_scale(interpolation, dt, new_pos);
   glm_vec3_add(new_pos, (float *)pos, new_pos);
   clamp_to_non_solid_cells(new_pos, grid->lc, grid->uc, grid->dx, dest);
 }
@@ -551,13 +602,122 @@ void project_pressure(Grid *grid) {
   substract_pressure_gradient(grid);
 }
 
+// --------------------- READ SETTINGS ---------------------
+
+bool str_to_ul(const char *str, size_t *dest) {
+  errno = 0;
+  char *end;
+  float ans = strtoul(str, &end, 10);
+  if (errno == ERANGE || end == str) return false;
+  *dest = ans;
+  return true;
+}
+
+size_t read_particles_count(FILE *file) {
+  size_t count = INVALID;
+  char buf[256];
+  if (!fgets(buf, sizeof(buf), file)) return INVALID;
+  if (!str_to_ul(buf, &count)) return INVALID;
+  return count;
+}
+
+bool read_particle(char *str, Particle *dest) {
+  Particle p;
+  if (sscanf(str, "%f %f %f %f %f %f", &p.pos[0], &p.pos[1], &p.pos[2], &p.vel[0], &p.vel[1], &p.vel[2]) != 6) return false;
+  *dest = p;
+  return true;
+}
+
+typedef struct {
+  Particle *ptr;
+  size_t len;
+} Particles;
+
+bool read_particles(const char *path, Particles *dest) {
+  FILE *file = fopen(path, "r");
+  if (!file) {
+    printf("[ERROR] Failed to open the particles file\n");
+    return false;
+  }
+  size_t count = read_particles_count(file);
+  if (count == INVALID) {
+    printf("[ERROR] Failed to read the particles count\n");
+    return false;
+  }
+  Particle *particles = malloc(sizeof(Particle) * count);
+  size_t curr = 0;
+  char buf[1024];
+  while (fgets(buf, sizeof(buf), file)) {
+    if (curr >= count) break;
+    Particle *p = &particles[curr++];
+    if (!read_particle(buf, p)) {
+      fclose(file);
+      free(particles);
+      printf("[ERROR] Failed to read the particle at the %zu line\n", curr + 1);
+      return false;
+    }
+  }
+  fclose(file);
+  *dest = (Particles){particles, count};
+  return true;
+}
+
+bool read_vec3_from_json(const cJSON *item, vec3 dest) {
+  if (!cJSON_IsArray(item) || cJSON_GetArraySize(item) != 3) return false;
+  for (int i = 0; i < 3; i++) {
+    dest[i] = cJSON_GetArrayItem(item, i)->valuedouble;
+  }
+  return true;
+}
+
+bool read_settings(const char *path, Settings *dest) {
+  char buf[16384];
+  if (!read_file(path, buf, sizeof(buf))) {
+    printf("[ERROR] Failed to read the settings source\n");
+    return false;
+  }
+  cJSON *json = cJSON_Parse(buf);
+  if (!json) {
+    const char *err = cJSON_GetErrorPtr();
+    printf("[ERROR] Failed to parse settings json data: %s\n", err);
+    return false;
+  }
+  cJSON *flip_ratio = cJSON_GetObjectItem(json, "flip-ratio");
+  cJSON *density = cJSON_GetObjectItem(json, "density");
+  cJSON *dx = cJSON_GetObjectItem(json, "dx");
+  cJSON *particles = cJSON_GetObjectItem(json, "particles");
+  cJSON *res_arr = cJSON_GetObjectItem(json, "res");
+  cJSON *lc_arr = cJSON_GetObjectItem(json, "lc");
+  vec3 res, lc;
+  // clang-format off
+  if (!(cJSON_IsNumber(flip_ratio) && flip_ratio->valuedouble) ||
+      !(cJSON_IsNumber(density)    && density->valuedouble)    ||
+      !(cJSON_IsNumber(dx)         && dx->valuedouble)         ||
+      !(cJSON_IsString(particles)  && particles->valuestring)  ||
+      !read_vec3_from_json(res_arr, res)                       ||
+      !read_vec3_from_json(lc_arr, lc)) {
+    cJSON_Delete(json);
+    printf("[ERROR] Failed to parse settings json values\n");
+    return false;
+  }
+  // clang-format on
+  dest->flip_ratio = flip_ratio->valuedouble;
+  dest->density = density->valuedouble;
+  dest->dx = dx->valuedouble;
+  strcpy(dest->particles, particles->valuestring);
+  glm_vec3_copy(res, dest->res);
+  glm_vec3_copy(lc, dest->lc);
+  cJSON_Delete(json);
+  return true;
+}
+
 // --------------------- SHADERS ---------------------
 
 uint32_t create_shader(uint32_t shader_program, GLenum type, const char *path) {
   char buf[8192], info[512];
   int success;
   const char *source = buf;
-  bool status = utility_read_file(path, buf, sizeof(buf));
+  bool status = read_file(path, buf, sizeof(buf));
   if (!status) {
     printf("[ERROR] Failed to read the shader's source\n");
     return INVALID;
@@ -597,24 +757,27 @@ uint32_t create_shader_program(const char *vertex_shader_path, const char *fragm
 
 // --------------------- MAIN LOOP ---------------------
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc < 2) {
+    printf("[ERROR] The settings path is not specified\n");
+    return -1;
+  }
+  const char *settings_path = argv[1];
+
   if (!glfwInit()) {
     printf("[ERROR] Failed to initialize GLFW\n");
     return -1;
   }
-
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
-
   GLFWwindow *window = glfwCreateWindow(WIDTH, HEIGHT, TITLE, NULL, NULL);
   if (!window) {
     printf("[ERROR] Failed to create a window\n");
     glfwTerminate();
     return -1;
   }
-
   glfwMakeContextCurrent(window);
   int version = gladLoadGL(glfwGetProcAddress);
   if (version == 0) {
@@ -629,17 +792,44 @@ int main() {
     = create_shader_program("/home/f01zy/Programming/Fluid Simulation/src/base.vert", "/home/f01zy/Programming/Fluid Simulation/src/base.frag");
   if (shader_program == INVALID) return -1;
 
+  Settings settings;
   Grid grid;
-  initialize_grid(10, 10, 10, 1.0f, GLM_VEC3_ZERO, &grid);
+  Particles particles;
+  if (!read_settings(settings_path, &settings)) return -1;
+  if (!read_particles(settings.particles, &particles)) return -1;
+  initialize_grid(&settings, &grid);
+
+  float last_frame = 0.0f;
+  float dt_need = 1.0f / FPS;
 
   while (!glfwWindowShouldClose(window)) {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    float now = glfwGetTime();
+    float dt = now - last_frame;
+    if (dt < dt_need) continue;
+
+    particles_to_grid(&grid, particles.ptr, particles.len);
+    apply_gravity(&grid, dt);
+    project_pressure(&grid);
+
+    for (int i = 0; i < particles.len; i++) {
+      Particle *p = &particles.ptr[i];
+      grid_to_particles(&grid, p, grid.flip_ratio, p->vel);
+    }
+
+    for (int i = 0; i < particles.len; i++) {
+      Particle *p = &particles.ptr[i];
+      advect(&grid, p->pos, dt, p->pos);
+    }
+
     glfwPollEvents();
     glfwSwapBuffers(window);
   }
 
   glDeleteProgram(shader_program);
   glfwTerminate();
+  free(particles.ptr);
   free_grid(&grid);
 }
