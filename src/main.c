@@ -1,7 +1,7 @@
 // --------------------- HEADERS ---------------------
 
 // clang-format off
-#include "cglm/vec3.h"
+#include <assert.h>
 #include <errno.h>
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -17,7 +17,7 @@
 // clang-format on
 
 // --------------------- DEFINES ---------------------
-
+#define PI                  (3.141592653589f)
 #define G                   (9.80665f)
 #define FPS                 (60.0f)
 #define CUSHION             (1.0e-4f)
@@ -26,10 +26,11 @@
 #define HEIGHT              (500)
 #define INVALID             ((uint32_t)-1)
 #define TITLE               ("Fluid Simulation")
-#define PRESSURE_ITERS      (1000)
+#define PRESSURE_ITERS      (100)
+#define MAX_CAMERA_RADIUS   (100.0f)
 #define IX(i, j, k, ny, nz) ((i) * (ny) * (nz) + (j) * (nz) + (k))
 
-// --------------------- TYPES ---------------------
+// --------------------- GLOBAL TYPES ---------------------
 
 typedef enum { MATERIAL_SOLID, MATERIAL_EMPTY, MATERIAL_FLUID } MaterialType;
 
@@ -57,6 +58,19 @@ typedef struct {
 } usArray;
 
 typedef struct {
+  float flip_ratio;
+  float density;
+  float dx;
+  vec3 res;
+  vec3 lc;
+  char particles[1024];
+} Settings;
+
+typedef struct {
+  vec3 pos, vel;
+} Particle;
+
+typedef struct {
   size_t nx, ny, nz;
   usArray n;
   fArray p, l, r, d, q;
@@ -68,19 +82,6 @@ typedef struct {
   float dx;
 } Grid;
 
-typedef struct {
-  vec3 pos, vel;
-} Particle;
-
-typedef struct {
-  float flip_ratio;
-  float density;
-  float dx;
-  vec3 res;
-  vec3 lc;
-  char particles[1024];
-} Settings;
-
 // --------------------- UTILITY ---------------------
 
 bool read_file(const char *path, char *buf, size_t size) {
@@ -91,7 +92,14 @@ bool read_file(const char *path, char *buf, size_t size) {
   return true;
 }
 
-void initialize_array(size_t nx, size_t ny, size_t nz, fArray *dest) {
+void initialize_farray(size_t nx, size_t ny, size_t nz, fArray *dest) {
+  dest->nx = nx;
+  dest->ny = ny;
+  dest->nz = nz;
+  dest->data = calloc(nx * ny * nz, sizeof(*dest->data));
+}
+
+void initialize_usarray(size_t nx, size_t ny, size_t nz, usArray *dest) {
   dest->nx = nx;
   dest->ny = ny;
   dest->nz = nz;
@@ -115,6 +123,7 @@ void initialize_grid(const Settings *settings, Grid *grid) {
 
   glm_vec3_copy((float *)settings->lc, grid->lc);
   glm_vec3_add((float *)settings->lc, (vec3){nx * dx, ny * dx, nz * dx}, grid->uc);
+  initialize_usarray(ny, ny, nz, &grid->n);
 
   struct {
     size_t nx, ny, nz;
@@ -125,12 +134,12 @@ void initialize_grid(const Settings *settings, Grid *grid) {
     {nx + 1, ny, nz, &grid->fu}, {nx, ny + 1, nz, &grid->fv}, {nx, ny, nz + 1, &grid->fw},
   };
   for (int i = 0; i < sizeof(arrs) / sizeof(*arrs); i++) {
-    initialize_array(arrs[i].nx, arrs[i].ny, arrs[i].nx, arrs[i].arr);
+    initialize_farray(arrs[i].nx, arrs[i].ny, arrs[i].nz, arrs[i].arr);
   }
 }
 
 void free_grid(Grid *grid) {
-  fArray *arrs[] = {&grid->p, &grid->l, &grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
+  fArray *arrs[] = {&grid->p, &grid->l, &grid->r, &grid->d, &grid->q, &grid->u, &grid->v, &grid->w, &grid->fu, &grid->fv, &grid->fw};
   for (int i = 0; i < sizeof(arrs) / sizeof(*arrs); i++) {
     free(arrs[i]->data);
   }
@@ -172,15 +181,19 @@ void farray_plus_times(fArray *source, const fArray *arr, float scalar) {
   }
 }
 
-void get_indices(const vec3 pos, float dx, ivec3 dest) {
+void get_indices(const vec3 shifted_pos, float dx, ivec3 dest) {
+  printf("%f, %f, %f\n", shifted_pos[0], shifted_pos[1], shifted_pos[2]);
+  assert(shifted_pos[0] >= 0.0f);
+  assert(shifted_pos[1] >= 0.0f);
+  assert(shifted_pos[2] >= 0.0f);
   for (int i = 0; i < 3; i++) {
-    dest[i] = (uint32_t)floorf(pos[i] / dx);
+    dest[i] = (uint32_t)floorf(shifted_pos[i] / dx);
   }
 }
 
-void get_weights(const vec3 pos, float dx, ivec3 indices, vec3 dest) {
+void get_weights(const vec3 shifted_pos, float dx, ivec3 indices, vec3 dest) {
   vec3 tmp;
-  glm_vec3_divs((float *)pos, dx, tmp);
+  glm_vec3_divs((float *)shifted_pos, dx, tmp);
   for (int i = 0; i < 3; i++) {
     dest[i] = tmp[i] - indices[i];
   }
@@ -205,6 +218,29 @@ float dot(const fArray *a, const fArray *b) {
     }
   }
   return ans;
+}
+
+size_t get_opengl_type_size(GLenum type) {
+  switch (type) {
+  case GL_FLOAT:
+    return sizeof(GLfloat);
+  case GL_INT:
+    return sizeof(GLint);
+  case GL_UNSIGNED_INT:
+    return sizeof(GLuint);
+  case GL_SHORT:
+    return sizeof(GLshort);
+  case GL_UNSIGNED_SHORT:
+    return sizeof(GLushort);
+  case GL_BYTE:
+    return sizeof(GLbyte);
+  case GL_UNSIGNED_BYTE:
+    return sizeof(GLubyte);
+  case GL_DOUBLE:
+    return sizeof(GLdouble);
+  default:
+    return 0;
+  }
 }
 
 // --------------------- LABELS ---------------------
@@ -271,10 +307,9 @@ MaterialType get_neighbour_material(const fArray *labels, size_t i, size_t j, si
 }
 
 uint16_t update_from_neighbour(uint16_t info, MaterialType material, Direction dir) {
-  uint16_t tmp;
-  if (material != MATERIAL_SOLID) tmp++;
-  if (material != MATERIAL_FLUID) return tmp;
-  return tmp | dir;
+  if (material != MATERIAL_SOLID) info++;
+  if (material == MATERIAL_FLUID) info |= dir;
+  return info;
 }
 
 void make_neighbour_material_info(const fArray *labels, const usArray *neighbours) {
@@ -353,7 +388,6 @@ void contribute(float weight, float particle_vel, const fArray *grid_vels, const
   grid_wgts->data[IX(i, j, k, grid_vels->ny, grid_vels->nz)] += weight;
 }
 
-// TODO: вылезает отрицательная позиция и индексы неправильно считаются
 void splat(const vec3 shifted_pos, float dx, float particle_vel, const fArray *grid_vels, const fArray *grid_wgts) {
   vec3 shifted_pos_over_dx;
   glm_vec3_scale((float *)shifted_pos, dx, shifted_pos_over_dx);
@@ -386,7 +420,7 @@ void splat(const vec3 shifted_pos, float dx, float particle_vel, const fArray *g
 void normalize(const fArray *x, const fArray *fx, const vec2 ix, const vec2 iy, const vec2 iz) {
   for (int i = ix[0]; i < ix[1]; i++) {
     for (int j = iy[0]; j < iy[1]; j++) {
-      for (int k = iz[0]; k < iz[0]; k++) {
+      for (int k = iz[0]; k < iz[1]; k++) {
         size_t t = IX(i, j, k, x->ny, x->nz);
         if (fabsf(fx->data[t]) < EPSILON) {
           x->data[t] = 0.0f;
@@ -505,7 +539,7 @@ void apply_gravity(const Grid *grid, float dt) {
   for (int i = 0; i < v->nx; i++) {
     for (int j = 0; j < v->ny + 1; j++) {
       for (int k = 0; k < v->nz; k++) {
-        v->data[IX(i, j, k, v->ny, v->nz)] += G * dt;
+        v->data[IX(i, j, k, v->ny, v->nz)] -= G * dt;
       }
     }
   }
@@ -582,15 +616,17 @@ void _project_pressure(Grid *grid) {
 
 void substract_pressure_gradient(const Grid *grid) {
   size_t nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const fArray *l = &grid->l, *p = &grid->p, *u = &grid->u, *v = &grid->v, *w = &grid->w;
   for (int i = 1; i < nx - 1; i++) {
     for (int j = 1; j < ny - 1; j++) {
       for (int k = 1; k < nz - 1; k++) {
         size_t t = IX(i, j, k, ny, nz);
-        if (grid->l.data[i] == MATERIAL_SOLID) continue;
-        float curr_pressure = grid->p.data[t];
-        if (grid->l.data[IX(i - 1, j, k, ny, nz)] != MATERIAL_SOLID) grid->u.data[t] -= curr_pressure - grid->p.data[IX(i - 1, j, k, ny, nz)];
-        if (grid->l.data[IX(i, j - 1, k, ny, nz)] != MATERIAL_SOLID) grid->v.data[t] -= curr_pressure - grid->p.data[IX(i, j - 1, k, ny, nz)];
-        if (grid->l.data[IX(i, j, k - 1, ny, nz)] != MATERIAL_SOLID) grid->w.data[t] -= curr_pressure - grid->p.data[IX(i, j, k - 1, ny, nz)];
+        // TODO: если заменить ошибочный i на t, позиция становится nan
+        if (l->data[t] == MATERIAL_SOLID) continue;
+        float curr_pressure = p->data[t];
+        if (l->data[IX(i - 1, j, k, ny, nz)] != MATERIAL_SOLID) u->data[IX(i, j, k, u->ny, u->nz)] -= curr_pressure - p->data[IX(i - 1, j, k, ny, nz)];
+        if (l->data[IX(i, j - 1, k, ny, nz)] != MATERIAL_SOLID) v->data[IX(i, j, k, v->ny, v->nz)] -= curr_pressure - p->data[IX(i, j - 1, k, ny, nz)];
+        if (l->data[IX(i, j, k - 1, ny, nz)] != MATERIAL_SOLID) w->data[IX(i, j, k, w->ny, w->nz)] -= curr_pressure - p->data[IX(i, j, k - 1, ny, nz)];
       }
     }
   }
@@ -755,60 +791,330 @@ uint32_t create_shader_program(const char *vertex_shader_path, const char *fragm
   return shader_program;
 }
 
+void uniform_set_mat4(uint32_t shader_program, const char *name, mat4 mat) {
+  glUniformMatrix4fv(glGetUniformLocation(shader_program, name), 1, GL_FALSE, (float *)mat);
+}
+
+void uniform_set_vec3(uint32_t shader_program, const char *name, vec3 vec) { glUniform3fv(glGetUniformLocation(shader_program, name), 1, vec); }
+
+// --------------------- RENDERERS ---------------------
+
+typedef struct {
+  vec3 position;
+  vec3 normal;
+  vec2 texture_coordinates;
+} __attribute__((packed)) Vertice;
+
+typedef struct {
+  size_t size;
+  GLenum type;
+} Attribute;
+
+typedef struct {
+  unsigned VAO;
+  unsigned VBO;
+  unsigned IBO;
+} Mesh;
+
+typedef struct {
+  struct {
+    Vertice *buf;
+    size_t len;
+    size_t size;
+  } vertices;
+
+  struct {
+    ivec3 *buf;
+    size_t len;
+    size_t size;
+  } indices;
+} SphereData;
+
+void initialize_sphere_data(SphereData *data, int sectors, int stacks) {
+  memset(data, 0, sizeof(*data));
+  float sector_step = PI * 2.0f / (float)sectors;
+  float stack_step = PI / (float)stacks;
+
+  for (int i = 0; i <= stacks; i++) {
+    float stack_angle = PI / 2.0f - stack_step * (float)i;
+    float xz = cosf(stack_angle);
+    float y = sinf(stack_angle);
+
+    for (int j = 0; j <= sectors; j++) {
+      if (data->vertices.len >= data->vertices.size) {
+        data->vertices.size = (data->vertices.size + 1) * 2;
+        data->vertices.buf = realloc(data->vertices.buf, sizeof(*data->vertices.buf) * data->vertices.size);
+      }
+      float sector_angle = sector_step * (float)j;
+      float x = xz * sinf(sector_angle);
+      float z = xz * cosf(sector_angle);
+      size_t len = data->vertices.len;
+      data->vertices.buf[len].position[0] = x;
+      data->vertices.buf[len].position[1] = y;
+      data->vertices.buf[len].position[2] = z;
+
+      data->vertices.buf[len].normal[0] = x;
+      data->vertices.buf[len].normal[1] = y;
+      data->vertices.buf[len].normal[2] = z;
+
+      float s = (float)j / (float)sectors;
+      float t = (float)i / (float)stacks;
+      data->vertices.buf[len].texture_coordinates[0] = s;
+      data->vertices.buf[len].texture_coordinates[1] = t;
+      data->vertices.len++;
+    }
+  }
+
+  for (int i = 0; i < stacks; i++) {
+    int k1 = i * (sectors + 1);
+    int k2 = k1 + sectors + 1;
+    for (int j = 0; j < sectors; j++, k1++, k2++) {
+      if (data->indices.len >= data->indices.size) {
+        data->indices.size = (data->indices.size + 1) * 2;
+        data->indices.buf = realloc(data->indices.buf, sizeof(*data->indices.buf) * data->indices.size);
+      }
+      if (i) {
+        size_t len = data->indices.len;
+        data->indices.buf[len][0] = k1;
+        data->indices.buf[len][1] = k2;
+        data->indices.buf[len][2] = k1 + 1;
+        data->indices.len++;
+      }
+      if (i != (stacks - 1)) {
+        size_t len = data->indices.len;
+        data->indices.buf[len][0] = k1 + 1;
+        data->indices.buf[len][1] = k2;
+        data->indices.buf[len][2] = k2 + 1;
+        data->indices.len++;
+      }
+    }
+  }
+}
+
+void free_sphere_data(const SphereData *data) {
+  free(data->vertices.buf);
+  free(data->indices.buf);
+}
+
+size_t get_sphere_vertices_size(const SphereData *data) { return sizeof(*data->vertices.buf) * data->vertices.len; }
+
+size_t get_sphere_indices_size(const SphereData *data) { return sizeof(*data->indices.buf) * data->indices.len; }
+
+bool initialize_mesh(Mesh *mesh, Vertice *vertices, size_t vertices_len, ivec3 *indices, size_t indices_len, Attribute *attributes, size_t attributes_len,
+                     GLenum render_mode) {
+  for (int i = 0; i < attributes_len; i++) {
+    size_t type_size = get_opengl_type_size(attributes[i].type);
+    if (type_size == 0) {
+      printf("[ERROR] Invalid attribute type\n");
+      return false;
+    }
+  }
+
+  glGenVertexArrays(1, &mesh->VAO);
+  glBindVertexArray(mesh->VAO);
+
+  glGenBuffers(1, &mesh->VBO);
+  glBindBuffer(GL_ARRAY_BUFFER, mesh->VBO);
+  glBufferData(GL_ARRAY_BUFFER, vertices_len, vertices, render_mode);
+  size_t stride = 0;
+  size_t offset = 0;
+  for (int i = 0; i < attributes_len; i++) {
+    stride += get_opengl_type_size(attributes[i].type) * attributes[i].size;
+  }
+  for (int i = 0; i < attributes_len; i++) {
+    const Attribute *attribute = &attributes[i];
+    glVertexAttribPointer(i, attribute->size, attribute->type, false, stride, (void *)offset);
+    glEnableVertexAttribArray(i);
+    offset += get_opengl_type_size(attribute->type) * attribute->size;
+  }
+
+  if (indices) {
+    glGenBuffers(1, &mesh->IBO);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh->IBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_len, indices, GL_STATIC_DRAW);
+  }
+
+  glBindVertexArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+  return true;
+}
+
+void free_mesh(const Mesh *mesh) {
+  glDeleteVertexArrays(1, &mesh->VAO);
+  glDeleteBuffers(1, &mesh->VBO);
+  glDeleteBuffers(1, &mesh->IBO);
+}
+
+void draw_sphere(const Mesh *mesh, vec3 pos, vec3 color, float radius, size_t indices_count, uint32_t shader_program) {
+  mat4 model = GLM_MAT4_IDENTITY_INIT;
+  glm_translate(model, pos);
+  glm_scale_uni(model, radius);
+  uniform_set_mat4(shader_program, "model", model);
+  uniform_set_vec3(shader_program, "sphere_color", color);
+  glBindVertexArray(mesh->VAO);
+  glDrawElements(GL_TRIANGLES, indices_count, GL_UNSIGNED_INT, NULL);
+  glBindVertexArray(0);
+}
+
+// --------------------- CAMERA ---------------------
+
+typedef struct {
+  vec3 pos, dir;
+  vec3 up, right;
+  float yaw, pitch;
+  float radius;
+  float fov;
+} Camera;
+
+vec3 world_up = {0.0f, 1.0f, 0.0f};
+vec3 target = {0.0f, 0.0f, 0.0f};
+
+void update_camera_position(Camera *camera) {
+  vec3 temp, direction;
+  temp[0] = camera->radius * cos(glm_rad(camera->yaw)) * cos(glm_rad(camera->pitch));
+  temp[1] = camera->radius * sin(glm_rad(camera->pitch));
+  temp[2] = camera->radius * sin(glm_rad(camera->yaw)) * cos(glm_rad(camera->pitch));
+  glm_vec3_copy(temp, camera->pos);
+  glm_vec3_sub(target, camera->pos, camera->dir);
+  glm_normalize(camera->dir);
+  glm_cross(camera->dir, world_up, camera->right);
+  glm_normalize(camera->right);
+  glm_cross(camera->right, camera->dir, camera->up);
+  glm_normalize(camera->up);
+}
+
+void initialize_camera(Camera *camera) {
+  camera->fov = 45.0f;
+  camera->yaw = 0.0f;
+  camera->pitch = 0.0f;
+  camera->radius = 10.0f;
+  update_camera_position(camera);
+}
+
+void get_camera_view_matrix(Camera *camera, mat4 view) { return glm_lookat(camera->pos, target, camera->up, view); }
+
+// --------------------- INPUT ---------------------
+
+float last_mouse_x = 0.0f;
+float last_mouse_y = 0.0f;
+bool is_first_mouse = true;
+
+void mouse_scroll_callback(GLFWwindow *window, double xoffset, double yoffset) {
+  Camera *camera = (Camera *)glfwGetWindowUserPointer(window);
+  float radius = camera->radius - yoffset;
+  if (radius >= 0.0f && radius <= MAX_CAMERA_RADIUS) {
+    camera->radius = radius;
+    update_camera_position(camera);
+  }
+}
+
+void mouse_position_callback(GLFWwindow *window, double xpos, double ypos) {
+  Camera *camera = (Camera *)glfwGetWindowUserPointer(window);
+  if (is_first_mouse) {
+    last_mouse_x = xpos;
+    last_mouse_y = ypos;
+    is_first_mouse = false;
+  }
+  float xoffset = xpos - last_mouse_x;
+  float yoffset = ypos - last_mouse_y;
+  last_mouse_x = xpos;
+  last_mouse_y = ypos;
+  if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+    camera->pitch = glm_clamp(camera->pitch + yoffset, -89.0f, 89.0f);
+    camera->yaw += xoffset;
+    update_camera_position(camera);
+  }
+}
+
 // --------------------- MAIN LOOP ---------------------
+
+GLFWwindow *create_window(float width, float height, const char *title, Camera *camera) {
+  if (!glfwInit()) {
+    printf("[ERROR] Failed to initialize GLFW\n");
+    return NULL;
+  }
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
+  GLFWwindow *window = glfwCreateWindow(width, height, title, NULL, NULL);
+  if (!window) {
+    printf("[ERROR] Failed to create a window\n");
+    glfwTerminate();
+    return NULL;
+  }
+  glfwMakeContextCurrent(window);
+  glfwSetWindowUserPointer(window, camera);
+  glfwSetScrollCallback(window, mouse_scroll_callback);
+  glfwSetCursorPosCallback(window, mouse_position_callback);
+  int version = gladLoadGL(glfwGetProcAddress);
+  if (version == 0) {
+    printf("[ERROR] Failed to initialize OpenGL context\n");
+    glfwTerminate();
+    return NULL;
+  }
+  printf("[LOG] Loaded OpenGL %d.%d\n", GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version));
+  glEnable(GL_DEPTH_TEST);
+  return window;
+}
 
 int main(int argc, char **argv) {
   if (argc < 2) {
     printf("[ERROR] The settings path is not specified\n");
     return -1;
   }
-  const char *settings_path = argv[1];
 
-  if (!glfwInit()) {
-    printf("[ERROR] Failed to initialize GLFW\n");
-    return -1;
-  }
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-  glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
-  GLFWwindow *window = glfwCreateWindow(WIDTH, HEIGHT, TITLE, NULL, NULL);
-  if (!window) {
-    printf("[ERROR] Failed to create a window\n");
-    glfwTerminate();
-    return -1;
-  }
-  glfwMakeContextCurrent(window);
-  int version = gladLoadGL(glfwGetProcAddress);
-  if (version == 0) {
-    printf("[ERROR] Failed to initialize OpenGL context\n");
-    glfwTerminate();
-    return -1;
-  }
-  printf("[LOG] Loaded OpenGL %d.%d\n", GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version));
-  glEnable(GL_DEPTH_TEST);
+  Camera camera;
+  initialize_camera(&camera);
+
+  const char *settings_path = argv[1];
+  GLFWwindow *window = create_window(WIDTH, HEIGHT, TITLE, &camera);
+  if (!window) return -1;
 
   uint32_t shader_program
     = create_shader_program("/home/f01zy/Programming/Fluid Simulation/src/base.vert", "/home/f01zy/Programming/Fluid Simulation/src/base.frag");
   if (shader_program == INVALID) return -1;
 
   Settings settings;
+  if (!read_settings(settings_path, &settings)) goto cleanup;
+
   Grid grid;
-  Particles particles;
-  if (!read_settings(settings_path, &settings)) return -1;
-  if (!read_particles(settings.particles, &particles)) return -1;
   initialize_grid(&settings, &grid);
 
+  Particles particles;
+  if (!read_particles(settings.particles, &particles)) goto cleanup;
+
+  SphereData data;
+  initialize_sphere_data(&data, 72, 24);
+
+  Attribute sphere_attributes[3] = {
+    {.size = 3, .type = GL_FLOAT},
+    {.size = 3, .type = GL_FLOAT},
+    {.size = 2, .type = GL_FLOAT},
+  };
+  Mesh mesh;
+  size_t vertices_size = get_sphere_vertices_size(&data);
+  size_t indices_size = get_sphere_indices_size(&data);
+  if (!initialize_mesh(&mesh, data.vertices.buf, vertices_size, data.indices.buf, indices_size, sphere_attributes, 3, GL_STATIC_DRAW)) goto cleanup;
+
+  size_t indices_count = sizeof(*data.indices.buf) / sizeof(*data.indices.buf[0]) * data.indices.len;
   float last_frame = 0.0f;
   float dt_need = 1.0f / FPS;
+  mat4 projection;
+  glm_perspective(camera.fov, (float)WIDTH / (float)HEIGHT, 0.1f, 100.0f, projection);
 
   while (!glfwWindowShouldClose(window)) {
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
     float now = glfwGetTime();
     float dt = now - last_frame;
     if (dt < dt_need) continue;
+    last_frame = now;
+
+    for (int i = 0; i < particles.len; i++) {
+      Particle *p = &particles.ptr[i];
+      advect(&grid, p->pos, dt, p->pos);
+    }
 
     particles_to_grid(&grid, particles.ptr, particles.len);
     apply_gravity(&grid, dt);
@@ -819,17 +1125,30 @@ int main(int argc, char **argv) {
       grid_to_particles(&grid, p, grid.flip_ratio, p->vel);
     }
 
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glUseProgram(shader_program);
+    mat4 view;
+    get_camera_view_matrix(&camera, view);
+    uniform_set_mat4(shader_program, "view", view);
+    uniform_set_mat4(shader_program, "projection", projection);
+
     for (int i = 0; i < particles.len; i++) {
       Particle *p = &particles.ptr[i];
-      advect(&grid, p->pos, dt, p->pos);
+      draw_sphere(&mesh, p->pos, (vec3){1.0f, 1.0f, 1.0f}, 1.0f, indices_count, shader_program);
     }
 
+    printf("FPS: %f\n", 1.0f / dt);
     glfwPollEvents();
     glfwSwapBuffers(window);
   }
 
+cleanup:
   glDeleteProgram(shader_program);
   glfwTerminate();
-  free(particles.ptr);
+  free_mesh(&mesh);
+  free_sphere_data(&data);
   free_grid(&grid);
+  free(particles.ptr);
 }

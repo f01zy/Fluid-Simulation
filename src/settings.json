@@ -3,6 +3,6 @@
   "density": 1000.0,
   "dx": 1.0,
   "res": [40, 40, 40],
-  "lc": [0, 0, 0],
+  "lc": [0.0, 0.0, 0.0],
   "particles": "/home/f01zy/Programming/Fluid Simulation/src/particles.in"
 }
