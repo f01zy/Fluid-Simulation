@@ -160,6 +160,8 @@ uint16_t update_from_neighbour(uint16_t info, MaterialType material, Direction d
   return info;
 }
 
+const Direction dirs[] = {LEFT, DOWN, BACK, RIGHT, UP, FORWARD};
+
 void make_neighbour_material_info(const fArray *labels, const usArray *neighbours) {
   size_t nx = labels->nx, ny = labels->ny, nz = labels->nz;
   zero_out_usarray(neighbours);
@@ -168,10 +170,14 @@ void make_neighbour_material_info(const fArray *labels, const usArray *neighbour
       for (int k = 1; k < nz - 1; k++) {
         if (labels->data[IX(i, j, k, ny, nz)] != MATERIAL_FLUID) continue;
         uint16_t info = 0;
-        for (Direction dir = LEFT; dir < FORWARD; dir++) {
+        uint16_t center_count = 0;
+        for (int d = 0; d < sizeof(dirs) / sizeof(*dirs); d++) {
+          Direction dir = dirs[d];
           MaterialType nbr = get_neighbour_material(labels, i, j, k, dir);
-          info = update_from_neighbour(info, nbr, dir);
+          if (nbr != MATERIAL_SOLID) center_count++;
+          if (nbr == MATERIAL_FLUID) info |= dir;
         }
+        info |= center_count;
         neighbours->data[IX(i, j, k, ny, nz)] = info;
       }
     }
@@ -277,33 +283,63 @@ void normalize(const fArray *x, const fArray *fx, const vec2 ix, const vec2 iy, 
 void handle_boundaries(const Grid *grid) {
   float *u = grid->u.data, *v = grid->v.data, *w = grid->w.data;
   size_t nx = grid->nx, ny = grid->ny, nz = grid->nz;
-  size_t unx = grid->u.nx, uny = grid->u.ny, unz = grid->u.nz;
-  size_t vnx = grid->v.nx, vny = grid->v.ny, vnz = grid->v.nz;
-  size_t wnx = grid->w.nx, wny = grid->w.ny, wnz = grid->w.nz;
+  size_t uny = grid->u.ny, unz = grid->u.nz;
+  size_t vny = grid->v.ny, vnz = grid->v.nz;
+  size_t wny = grid->w.ny, wnz = grid->w.nz;
+
   for (int j = 0; j < ny; j++) {
     for (int k = 0; k < nz; k++) {
-      u[IX(0, j, k, uny, unz)] = u[IX(1, j, k, uny, unz)] = u[IX(nx - 1, j, k, uny, unz)] = u[IX(nx, j, k, uny, unz)] = 0.0f;
+      u[IX(0, j, k, uny, unz)] = u[IX(1, j, k, uny, unz)] = 0.0f;
+      u[IX(nx - 1, j, k, uny, unz)] = u[IX(nx, j, k, uny, unz)] = 0.0f;
+    }
+  }
+  for (int j = 0; j <= ny; j++) {
+    for (int k = 0; k < nz; k++) {
       v[IX(0, j, k, vny, vnz)] = v[IX(1, j, k, vny, vnz)];
-      w[IX(0, j, k, wny, wnz)] = w[IX(1, j, k, wny, wnz)];
       v[IX(nx - 1, j, k, vny, vnz)] = v[IX(nx - 2, j, k, vny, vnz)];
+    }
+  }
+  for (int j = 0; j < ny; j++) {
+    for (int k = 0; k <= nz; k++) {
+      w[IX(0, j, k, wny, wnz)] = w[IX(1, j, k, wny, wnz)];
       w[IX(nx - 1, j, k, wny, wnz)] = w[IX(nx - 2, j, k, wny, wnz)];
     }
   }
+
   for (int i = 0; i < nx; i++) {
     for (int k = 0; k < nz; k++) {
-      v[IX(i, 0, k, vny, vnz)] = v[IX(i, 1, k, vny, vnz)] = v[IX(i, ny - 1, k, vny, vnz)] = v[IX(i, ny, k, vny, vnz)] = 0.0f;
+      v[IX(i, 0, k, vny, vnz)] = v[IX(i, 1, k, vny, vnz)] = 0.0f;
+      v[IX(i, ny - 1, k, vny, vnz)] = v[IX(i, ny, k, vny, vnz)] = 0.0f;
+    }
+  }
+  for (int i = 0; i <= nx; i++) {
+    for (int k = 0; k < nz; k++) {
       u[IX(i, 0, k, uny, unz)] = u[IX(i, 1, k, uny, unz)];
-      w[IX(i, 0, k, wny, wnz)] = w[IX(i, 1, k, wny, wnz)];
       u[IX(i, ny - 1, k, uny, unz)] = u[IX(i, ny - 2, k, uny, unz)];
-      w[IX(i, ny - 1, k, wny, wnz)] = w[IX(i, ny - 2, k, wny, wnz)];
     }
   }
   for (int i = 0; i < nx; i++) {
+    for (int k = 0; k <= nz; k++) {
+      w[IX(i, 0, k, wny, wnz)] = w[IX(i, 1, k, wny, wnz)];
+      w[IX(i, ny - 1, k, wny, wnz)] = w[IX(i, ny - 2, k, wny, wnz)];
+    }
+  }
+
+  for (int i = 0; i < nx; i++) {
     for (int j = 0; j < ny; j++) {
-      w[IX(i, j, 0, wny, wnz)] = w[IX(i, j, 1, wny, wnz)] = w[IX(i, j, nz - 1, wny, wnz)] = w[IX(i, j, nz, wny, wnz)] = 0.0f;
+      w[IX(i, j, 0, wny, wnz)] = w[IX(i, j, 1, wny, wnz)] = 0.0f;
+      w[IX(i, j, nz - 1, wny, wnz)] = w[IX(i, j, nz, wny, wnz)] = 0.0f;
+    }
+  }
+  for (int i = 0; i <= nx; i++) {
+    for (int j = 0; j < ny; j++) {
       u[IX(i, j, 0, uny, unz)] = u[IX(i, j, 1, uny, unz)];
-      v[IX(i, j, 0, vny, vnz)] = v[IX(i, j, 1, vny, vnz)];
       u[IX(i, j, nz - 1, uny, unz)] = u[IX(i, j, nz - 2, uny, unz)];
+    }
+  }
+  for (int i = 0; i < nx; i++) {
+    for (int j = 0; j <= ny; j++) {
+      v[IX(i, j, 0, vny, vnz)] = v[IX(i, j, 1, vny, vnz)];
       v[IX(i, j, nz - 1, vny, vnz)] = v[IX(i, j, nz - 2, vny, vnz)];
     }
   }
@@ -379,17 +415,18 @@ void _project_pressure(Grid *grid) {
 
   float sigma = dot(&grid->r, &grid->r);
   float tolerance = sigma * EPSILON;
-  if (fabsf(sigma) < EPSILON) return;
+  if (sigma < tolerance) return;
 
   for (int i = 0; i < PRESSURE_ITERS; i++) {
     a_times_d(&grid->d, &grid->n, &grid->q);
     float d_dot_q = dot(&grid->d, &grid->q);
-    if (fabsf(d_dot_q) < EPSILON) break;
+    if (d_dot_q < EPSILON) break;
     float alpha = sigma / d_dot_q;
     farray_plus_equal(&grid->p, &grid->d, alpha);
     farray_plus_equal(&grid->r, &grid->q, -alpha);
     float sigma_old = sigma;
     sigma = dot(&grid->r, &grid->r);
+    if (sigma < tolerance) break;
     float beta = sigma / sigma_old;
     farray_plus_times(&grid->d, &grid->r, beta);
   }

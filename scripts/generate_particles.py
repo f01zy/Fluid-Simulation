@@ -30,8 +30,8 @@ def generate_particles(
 
 if __name__ == "__main__":
     generate_particles(
-        filename="/home/f01zy/Programming/Fluid Simulation/src/settings/particles.in",
-        origin=(-5.0, 15.0, -45.0),
+        filename="particles.in",
+        origin=(-2.0, -4.5, -5.5),
         size=(4, 4, 4),
         ppc=8,
         cell_size=1.0,

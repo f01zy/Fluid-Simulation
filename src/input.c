@@ -12,7 +12,7 @@ bool is_first_mouse = true;
 void mouse_scroll_callback(GLFWwindow *window, double xoffset, double yoffset) {
   Camera *camera = (Camera *)glfwGetWindowUserPointer(window);
   float radius = camera->radius - yoffset;
-  if (radius >= 0.0f && radius <= MAX_CAMERA_RADIUS) {
+  if (radius > 0.0f && radius <= MAX_CAMERA_RADIUS) {
     camera->radius = radius;
     update_camera_position(camera);
   }

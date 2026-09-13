@@ -22,5 +22,6 @@ void initialize_sphere_data(SphereData *data, int sectors, int stacks);
 void free_sphere_data(const SphereData *data);
 size_t get_sphere_vertices_size(const SphereData *data);
 size_t get_sphere_indices_size(const SphereData *data);
+void render_sphere(const Mesh *mesh, vec3 pos, vec3 color, float radius, size_t indices_count, uint32_t shader_program);
 
 #endif

@@ -22,8 +22,8 @@ void update_camera_position(Camera *camera) {
 
 void initialize_camera(Camera *camera) {
   camera->fov = 45.0f;
-  camera->yaw = 0.0f;
-  camera->pitch = 0.0f;
+  camera->yaw = 90.0f;
+  camera->pitch = 45.0f;
   camera->radius = 10.0f;
   update_camera_position(camera);
 }

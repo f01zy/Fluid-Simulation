@@ -1,9 +1,11 @@
 #include <cglm/cglm.h>
+#include <glad/gl.h>
 #include <math.h>
 #include <string.h>
 
 #include "defines.h"
 #include "mesh.h"
+#include "shader.h"
 #include "sphere.h"
 
 void initialize_sphere_data(SphereData *data, int sectors, int stacks) {
@@ -75,3 +77,14 @@ void free_sphere_data(const SphereData *data) {
 size_t get_sphere_vertices_size(const SphereData *data) { return sizeof(*data->vertices.buf) * data->vertices.len; }
 
 size_t get_sphere_indices_size(const SphereData *data) { return sizeof(*data->indices.buf) * data->indices.len; }
+
+void render_sphere(const Mesh *mesh, vec3 pos, vec3 color, float radius, size_t indices_count, uint32_t shader_program) {
+  mat4 model = GLM_MAT4_IDENTITY_INIT;
+  glm_translate(model, pos);
+  glm_scale_uni(model, radius);
+  uniform_set_mat4(shader_program, "model", model);
+  uniform_set_vec3(shader_program, "sphere_color", color);
+  glBindVertexArray(mesh->VAO);
+  glDrawElements(GL_TRIANGLES, indices_count, GL_UNSIGNED_INT, NULL);
+  glBindVertexArray(0);
+}
