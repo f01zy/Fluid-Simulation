@@ -6,7 +6,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(OpenGL_GL_PREFERENCE GLVND)
 set(TARGET fluid-simulation)
-set(SOURCE ./src/main.c)
+file(GLOB SOURCE ./src/*.c)
 
 add_executable(${TARGET} ${SOURCE})
 find_package(OpenGL REQUIRED)
