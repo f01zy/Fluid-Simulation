@@ -28,4 +28,4 @@ void initialize_camera(Camera *camera) {
   update_camera_position(camera);
 }
 
-void get_camera_view_matrix(Camera *camera, mat4 view) { return glm_lookat(camera->pos, target, camera->up, view); }
+void get_camera_view_matrix(const Camera *camera, mat4 view) { return glm_lookat((float *)camera->pos, target, (float *)camera->up, view); }

@@ -13,6 +13,6 @@ typedef struct {
 
 void initialize_camera(Camera *camera);
 void update_camera_position(Camera *camera);
-void get_camera_view_matrix(Camera *camera, mat4 view);
+void get_camera_view_matrix(const Camera *camera, mat4 view);
 
 #endif

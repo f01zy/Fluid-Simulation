@@ -4,8 +4,8 @@
 #include "mesh.h"
 #include "utility.h"
 
-bool initialize_mesh(Mesh *mesh, Vertice *vertices, size_t vertices_len, ivec3 *indices, size_t indices_len, Attribute *attributes, size_t attributes_len,
-                     GLenum render_mode) {
+bool initialize_mesh(Mesh *mesh, const float *vertices, size_t vertices_len, const ivec3 *indices, size_t indices_len, const Attribute *attributes,
+                     size_t attributes_len, GLenum render_mode) {
   for (int i = 0; i < attributes_len; i++) {
     size_t type_size = get_opengl_type_size(attributes[i].type);
     if (type_size == 0) {

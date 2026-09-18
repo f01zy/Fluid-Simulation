@@ -2,16 +2,26 @@ import random
 
 def generate_particles(
     filename="particles.in",
+    grid_origin=None,
+    grid_size=None,
     origin=(0.0, 0.0, 0.0),
-    size=(20, 20, 20),
+    size=(10, 10, 10),
     ppc=8,
     cell_size=1.0,
     initial_vel=(0.0, 0.0, 0.0)
 ):
     particles = []
-    ox, oy, oz = origin
     nx, ny, nz = size
     vx, vy, vz = initial_vel
+
+    if grid_origin is not None and grid_size is not None:
+        gx, gy, gz = grid_origin
+        gnx, gny, gnz = grid_size
+        ox = gx + ((gnx - nx) * cell_size) / 2.0
+        oy = gy + ((gny - ny) * cell_size) / 2.0
+        oz = gz + ((gnz - nz) * cell_size) / 2.0
+    else:
+        ox, oy, oz = origin
 
     for x in range(nx):
         for y in range(ny):
@@ -31,8 +41,9 @@ def generate_particles(
 if __name__ == "__main__":
     generate_particles(
         filename="particles.in",
-        origin=(-2.0, -4.5, -5.5),
-        size=(4, 4, 4),
+        grid_origin=(-7.5, -10.0, -15.0),
+        grid_size=(15, 15, 15),
+        size=(10, 10, 10),
         ppc=8,
         cell_size=1.0,
         initial_vel=(0.0, 0.0, 0.0)

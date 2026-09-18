@@ -4,7 +4,7 @@
 #define G                   (30.80665f)
 #define FPS                 (60.0f)
 #define CUSHION             (1.0e-4f)
-#define RADIUS              (0.3f)
+#define RADIUS              (0.18f)
 #define EPSILON             (1.0e-6f)
 #define WIDTH               (600)
 #define HEIGHT              (500)

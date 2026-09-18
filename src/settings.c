@@ -77,37 +77,58 @@ bool read_settings(const char *path, Settings *dest) {
     printf("[ERROR] Failed to read the settings source\n");
     return false;
   }
+
   cJSON *json = cJSON_Parse(buf);
   if (!json) {
     const char *err = cJSON_GetErrorPtr();
     printf("[ERROR] Failed to parse settings json data: %s\n", err);
     return false;
   }
+
+  cJSON *duration = cJSON_GetObjectItem(json, "duration");
   cJSON *flip_ratio = cJSON_GetObjectItem(json, "flip-ratio");
   cJSON *density = cJSON_GetObjectItem(json, "density");
   cJSON *dx = cJSON_GetObjectItem(json, "dx");
   cJSON *particles = cJSON_GetObjectItem(json, "particles");
+  cJSON *render_type = cJSON_GetObjectItem(json, "render-type");
   cJSON *res_arr = cJSON_GetObjectItem(json, "res");
   cJSON *lc_arr = cJSON_GetObjectItem(json, "lc");
   vec3 res, lc;
+
   // clang-format off
-  if (!(cJSON_IsNumber(flip_ratio) && flip_ratio->valuedouble) ||
-      !(cJSON_IsNumber(density)    && density->valuedouble)    ||
-      !(cJSON_IsNumber(dx)         && dx->valuedouble)         ||
-      !(cJSON_IsString(particles)  && particles->valuestring)  ||
-      !read_vec3_from_json(res_arr, res)                       ||
+  if (!(cJSON_IsNumber(duration)    && duration->valuedouble)    ||
+      !(cJSON_IsNumber(flip_ratio)  && flip_ratio->valuedouble)  ||
+      !(cJSON_IsNumber(density)     && density->valuedouble)     ||
+      !(cJSON_IsNumber(dx)          && dx->valuedouble)          ||
+      !(cJSON_IsString(particles)   && particles->valuestring)   ||
+      !(cJSON_IsString(render_type) && render_type->valuestring) ||
+      !read_vec3_from_json(res_arr, res)                         ||
       !read_vec3_from_json(lc_arr, lc)) {
     cJSON_Delete(json);
     printf("[ERROR] Failed to parse settings json values\n");
     return false;
   }
   // clang-format on
+
+  if (!strcmp(render_type->valuestring, "screen")) {
+    dest->render_type = RENDER_TO_SCREEN;
+  } else if (!strcmp(render_type->valuestring, "video")) {
+    dest->render_type = RENDER_TO_VIDEO;
+  } else {
+    cJSON_Delete(json);
+    printf("[ERROR] Render type must be only `opengl` or `gif`\n");
+    return false;
+  }
+
+  dest->duration = duration->valuedouble;
   dest->flip_ratio = flip_ratio->valuedouble;
   dest->density = density->valuedouble;
   dest->dx = dx->valuedouble;
+
   strcpy(dest->particles, particles->valuestring);
   glm_vec3_copy(res, dest->res);
   glm_vec3_copy(lc, dest->lc);
+
   cJSON_Delete(json);
   return true;
 }
