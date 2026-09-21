@@ -1,0 +1,10 @@
+{
+  "duration": 5.0,
+  "flip-ratio": 0.95,
+  "density": 1000.0,
+  "dx": 0.25,
+  "res": [40, 40, 40],
+  "lc": [-5.0, -10.0, -15.0],
+  "render-type": "video",
+  "particles": "/home/f01zy/Programming/Fluid Simulation/build/particles.in"
+}
