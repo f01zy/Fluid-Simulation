@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <cJSON.h>
 #include <cglm/cglm.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -176,6 +177,7 @@ int main(int argc, char **argv) {
   if (!initialize_mesh(&screen_mesh, screen_vertices, sizeof(screen_vertices), NULL, 0, screen_attributes, 2, GL_STATIC_DRAW)) goto cleanup;
   screen_mesh_inited = true;
 
+  float radius = cbrt((3 * pow(settings.dx, 3)) / (32 * PI));
   float last_frame = 0.0f;
   float dt_need = 1.0f / FPS;
   int last_frames = 0;
@@ -203,7 +205,7 @@ int main(int argc, char **argv) {
         .camera = &camera,
         .framebuffer = &framebuffer,
       },
-      indices_count, (ivec2){WIDTH, HEIGHT}, base_shader_program, text_shader_program, dt);
+      radius, indices_count, (ivec2){WIDTH, HEIGHT}, base_shader_program, text_shader_program, dt);
 
     if (is_screen) {
       render_to_screen(&screen_mesh, framebuffer.screen_texture, screen_shader_program);
@@ -221,19 +223,15 @@ cleanup:
   if (base_shader_program != INVALID) glDeleteProgram(base_shader_program);
   if (text_shader_program != INVALID) glDeleteProgram(text_shader_program);
   if (screen_shader_program != INVALID) glDeleteProgram(screen_shader_program);
-
   if (sphere_mesh_inited) free_mesh(&sphere_mesh);
   if (text_mesh_inited) free_mesh(&text_mesh);
   if (screen_mesh_inited) free_mesh(&screen_mesh);
-
   if (sphere_data_inited) free_sphere_data(&data);
   if (font_inited) free_font(&font);
   if (grid_inited) free_grid(&grid);
   if (particles_inited) free(particles.ptr);
-
   if (pixels) free(pixels);
   if (ffmpeg) pclose(ffmpeg);
-
   if (window) glfwDestroyWindow(window);
   glfwTerminate();
 }

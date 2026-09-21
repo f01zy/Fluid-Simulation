@@ -41,10 +41,10 @@ def generate_particles(
 if __name__ == "__main__":
     generate_particles(
         filename="particles.in",
-        grid_origin=(-7.5, -10.0, -15.0),
-        grid_size=(15, 15, 15),
-        size=(10, 10, 10),
+        grid_origin=(-5.0, -10.0, -15.0),
+        grid_size=(40, 40, 40),
+        size=(18, 18, 18),
         ppc=8,
-        cell_size=1.0,
+        cell_size=0.25,
         initial_vel=(0.0, 0.0, 0.0)
     )

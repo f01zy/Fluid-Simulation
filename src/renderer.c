@@ -13,8 +13,8 @@
 #include "shader.h"
 #include "sphere.h"
 
-void render_to_framebuffer(const Resources resources, size_t indices_count, ivec2 screen_size, uint32_t base_shader_program, uint32_t text_shader_program,
-                           float dt) {
+void render_to_framebuffer(const Resources resources, float radius, size_t indices_count, ivec2 screen_size, uint32_t base_shader_program,
+                           uint32_t text_shader_program, float dt) {
   const Grid *grid = resources.grid;
   const Particles *particles = resources.particles;
   const Mesh *sphere_mesh = resources.sphere_mesh;
@@ -41,7 +41,7 @@ void render_to_framebuffer(const Resources resources, size_t indices_count, ivec
 
   for (int i = 0; i < particles->len; i++) {
     Particle *p = &particles->ptr[i];
-    render_sphere(sphere_mesh, p->pos, (vec3){0.0f, 0.58f, 1.0f}, RADIUS, indices_count, base_shader_program);
+    render_sphere(sphere_mesh, p->pos, (vec3){0.0f, 0.58f, 1.0f}, radius, indices_count, base_shader_program);
   }
 
   glUseProgram(text_shader_program);
